@@ -1,5 +1,7 @@
 use std::{ffi::CString, ptr};
-use x11::xlib::{Display, Window, XDefaultScreen, XDefaultScreenOfDisplay, XFlush, XOpenDisplay, XRootWindowOfScreen, XStoreName};
+use x11::xlib::{
+    Display, Window, XDefaultScreenOfDisplay, XFlush, XOpenDisplay, XRootWindowOfScreen, XStoreName,
+};
 
 pub struct WindowSystem {
     display: *mut Display,

@@ -3,15 +3,16 @@ use signal_hook::{
     consts::{SIGINT, SIGTERM, SIGUSR1},
     iterator::Signals,
 };
-use xstuff::WindowSystem;
 use std::{
     error::Error,
     process::exit,
     process::Command,
+    sync::mpsc::{self, Receiver, Sender},
     sync::{Arc, Mutex},
     thread,
     time::Duration,
 };
+use xstuff::WindowSystem;
 
 const SEPARATOR: &str = " | ";
 
@@ -35,17 +36,17 @@ fn signalhandler(sig: i32, commands: Vec<Vec<&'static str>>) -> Vec<(usize, Stri
             )
         })
         .collect();
-    commands_run.clone()
+    commands_run
 }
 
 fn setupsignals(
     commands: Vec<Vec<&'static str>>,
     status_bar: Arc<Mutex<Vec<String>>>,
+    tx: Sender<bool>,
 ) -> Result<(), Box<dyn Error>> {
     let mut signals = Signals::new(&[SIGINT, SIGTERM])?;
     thread::spawn(move || {
-        for sig in signals.forever() {
-            println!("Received {:?}", sig);
+        for _ in signals.forever() {
             exit(0);
         }
     });
@@ -60,10 +61,10 @@ fn setupsignals(
             needed.push(i.1 + SIGUSR1 - 1);
         }
     }
-    println!("{:?}", needed);
     let mut signals = Signals::new(&needed)?;
     thread::spawn(move || {
         for sig in signals.forever() {
+            let thread_tx = tx.clone();
             let commands_run = signalhandler(sig - SIGUSR1 + 1, commands.clone());
             commands_run.iter().for_each(|(i, j)| {
                 let mut val = j.clone();
@@ -71,13 +72,18 @@ fn setupsignals(
                 let mut x = status_bar.lock().unwrap();
                 x[*i] = val;
             });
-            println!("{:?}", status_bar)
+            thread_tx.send(true).unwrap();
         }
     });
     Ok(())
 }
 
-fn getcmds(commands: Vec<Vec<&'static str>>, status_bar: Arc<Mutex<Vec<String>>>, cur_time: i32) {
+fn getcmds(
+    commands: Vec<Vec<&'static str>>,
+    status_bar: Arc<Mutex<Vec<String>>>,
+    cur_time: i32,
+    tx: Sender<bool>,
+) {
     let val: Vec<_> = commands
         .iter()
         .enumerate()
@@ -114,28 +120,34 @@ fn getcmds(commands: Vec<Vec<&'static str>>, status_bar: Arc<Mutex<Vec<String>>>
             }
         })
         .collect();
-    println!("{:?}", val);
     if !(val.iter().all(|i| *i == false)) {
-        println!("{:?}", status_bar);
+        tx.send(true).unwrap();
     }
     thread::sleep(Duration::new(1, 0));
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
+    // All commands to run
     let commands: Vec<Vec<&'static str>> = vec![
         vec!["", "date '+%b %d (%a) %I:%M%p'", "30", "45"],
         vec!["", "cat /sys/class/power_supply/BAT0/capacity", "80", "46"],
     ];
+    let count: usize = commands.len();
+
+    // Opens a new x-window
     let window_system = WindowSystem::new();
-    let status_bar = Arc::new(Mutex::new(vec![String::new(); 2]));
-    setupsignals(commands.clone(), Arc::clone(&status_bar))?;
+    let status_bar = Arc::new(Mutex::new(vec![String::new(); count]));
+    let (tx, rx): (Sender<bool>, Receiver<bool>) = mpsc::channel();
+    setupsignals(commands.clone(), Arc::clone(&status_bar), tx.clone())?;
     let mut count = -1;
     loop {
-        getcmds(commands.clone(), Arc::clone(&status_bar), count);
-        let x = status_bar.lock().unwrap();
-        let name = x.join(SEPARATOR);
-        window_system.draw(name);
-        std::mem::drop(x);
+        getcmds(commands.clone(), Arc::clone(&status_bar), count, tx.clone());
+        if rx.try_recv().is_ok() {
+            let x = status_bar.lock().unwrap();
+            let name = x.join(SEPARATOR);
+            window_system.draw(name);
+            std::mem::drop(x);
+        }
         count += 1;
     }
 }
